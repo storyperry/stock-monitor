@@ -21,6 +21,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, colorchooser
 from tkinter import font as tkfont
 import urllib.request
+import urllib.parse
 
 import keyboard
 import pystray
@@ -326,7 +327,7 @@ def short_name(name):
 def normalize_code(text):
     """把用户输入转成腾讯接口代码，如 600519 -> sh600519"""
     text = text.strip().lower().replace(" ", "")
-    if re.fullmatch(r"(sh|sz|bj)\d{5,6}", text):
+    if re.fullmatch(r"(sh|sz|bj|hk)\d{4,6}", text):
         return text
     if re.fullmatch(r"\d{5,6}", text):
         first = text[0]
@@ -337,6 +338,35 @@ def normalize_code(text):
         if first in "48":
             return "bj" + text
     return None
+
+
+def search_stock(query):
+    """腾讯 smartbox 联想搜索：支持代码 / 名称 / 拼音全拼 / 拼音首字母（XMJT→小米集团）。
+    返回 [(完整代码, 名称), ...]，只保留本程序能报价的市场（sh/sz/bj/hk）。"""
+    q = (query or "").strip()
+    if len(q) < 2:
+        return []
+    url = "http://smartbox.gtimg.cn/s3/?v=2&q=%s&t=all" % urllib.parse.quote(q)
+    try:
+        raw = http_get(url, tries=2, timeout=4, encoding="gbk")
+    except Exception:
+        return []
+    m = re.search(r'v_hint="([^"]*)"', raw)
+    if not m or m.group(1) in ("", "N"):
+        return []
+    # 接口里的中文是 \uXXXX 转义，还原成汉字
+    hint = re.sub(r"\\u([0-9a-fA-F]{4})",
+                  lambda mm: chr(int(mm.group(1), 16)), m.group(1))
+    out = []
+    for item in hint.split("^"):
+        f = item.split("~")
+        if len(f) >= 3 and f[0] in ("sh", "sz", "bj", "hk"):
+            full = f[0] + f[1]
+            if full not in [c for c, _ in out]:
+                out.append((full, f[2]))
+        if len(out) >= 8:
+            break
+    return out
 
 
 UA_HEADERS = {
@@ -1896,16 +1926,79 @@ class App:
         dlg.configure(bg=self.cfg["bg_color"])
         dlg.resizable(False, False)
         dlg.attributes("-topmost", True)
-        tk.Label(dlg, text="输入代码（如 600519 / 000001 / 510300 / sh000001指数）:",
+        tk.Label(dlg, text="输入代码 / 名称 / 拼音首字母（如 XMJT、gzmt、600519），从下方列表选择:",
                  bg=self.cfg["bg_color"], fg=self.cfg["text_color"],
                  font=("微软雅黑", 10)).pack(padx=14, pady=(12, 4))
-        ent = tk.Entry(dlg, width=24, font=("Consolas", 11),
+        ent = tk.Entry(dlg, width=28, font=("Consolas", 11),
                        bg="#2a2f38", fg="#ffffff", insertbackground="#ffffff")
         ent.pack(padx=14, pady=4)
         ent.focus_force()
+        # 联想候选列表（边输边搜，支持拼音首字母）
+        listf = tk.Frame(dlg, bg=self.cfg["bg_color"])
+        listf.pack(padx=14, pady=(2, 0))
+        lb = tk.Listbox(listf, width=36, height=7, font=("微软雅黑", 10),
+                        bg="#2a2f38", fg="#ffffff", selectbackground="#3a6ea5",
+                        selectforeground="#ffffff", activestyle="none",
+                        highlightthickness=0, exportselection=False)
+        sb = tk.Scrollbar(listf, command=lb.yview, bg="#3a4150",
+                          activebackground="#4a90d9", troughcolor="#2a2f38",
+                          highlightthickness=0, width=10)
+        lb.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+        lb.insert(tk.END, "（输入至少 2 个字符开始搜索）")
+        state = {"hits": [], "after": None, "seq": 0}
+
+        def do_search(seq):
+            q = ent.get().strip()
+            if len(q) < 2 or seq != state["seq"]:
+                return
+
+            def worker():
+                hits = search_stock(q)
+                def fill():
+                    if not lb.winfo_exists() or seq != state["seq"]:
+                        return
+                    lb.delete(0, tk.END)
+                    state["hits"] = hits
+                    if hits:
+                        for code, name in hits:
+                            lb.insert(tk.END, "%s  %s" % (code.upper(), name))
+                        lb.selection_set(0)
+                    else:
+                        lb.insert(tk.END, "（没有匹配的股票）")
+                dlg.after(0, fill)
+            threading.Thread(target=worker, daemon=True).start()
+
+        def on_type(e=None):
+            if e and getattr(e, "keysym", "") in ("Return", "Escape", "Up", "Down"):
+                return
+            state["seq"] += 1
+            if state["after"]:
+                try:
+                    dlg.after_cancel(state["after"])
+                except Exception:
+                    pass
+            state["after"] = dlg.after(300, lambda: do_search(state["seq"]))
+
+        def pick(e=None):
+            sel = lb.curselection()
+            if sel:
+                code = lb.get(sel[0]).split()[0].lower()
+                ent.delete(0, tk.END)
+                ent.insert(0, code)
+
+        def add_pick(e=None):
+            """回车：Entry 里有完整代码就直接加；否则取列表第一条"""
+            if not lb.curselection() and state["hits"]:
+                ent.delete(0, tk.END)
+                ent.insert(0, state["hits"][0][0])
+            ok()
 
         def ok(event=None):
             code = normalize_code(ent.get())
+            if not code and state["hits"]:
+                code = state["hits"][0][0]      # 拼音/名称输入 → 用第一条联想结果
             if not code:
                 messagebox.showwarning("提示", "代码格式不正确", parent=dlg)
                 return
@@ -1934,9 +2027,12 @@ class App:
             save_config(self.cfg)
             self._refresh_tree_rows()
             dlg.destroy()
-        ent.bind("<Return>", ok)
-        tk.Button(dlg, text="添加", command=ok, bg="#4a90d9", fg="#ffffff",
-                  font=("微软雅黑", 10), relief="flat", cursor="hand2").pack(pady=(4, 12))
+        ent.bind("<Return>", add_pick)
+        ent.bind("<KeyRelease>", on_type)
+        lb.bind("<Double-Button-1>", lambda e: (pick(), ok()))
+        lb.bind("<Return>", add_pick)
+        tk.Button(dlg, text="添加", command=add_pick, bg="#4a90d9", fg="#ffffff",
+                  font=("微软雅黑", 10), relief="flat", cursor="hand2").pack(pady=(6, 12))
 
     def remove_selected(self):
         sel = self.tree.selection()
