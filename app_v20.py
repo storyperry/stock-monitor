@@ -460,14 +460,19 @@ def fmt_vol(v):
 
 
 def make_default_tray_icon():
-    """生成默认托盘图标：K线风格"""
-    img = Image.new("RGBA", (64, 64), (30, 34, 42, 255))
-    dr = ImageDraw.Draw(img)
-    dr.rectangle([12, 22, 26, 48], fill=(244, 64, 64, 255))
-    dr.rectangle([18, 12, 20, 54], fill=(244, 64, 64, 255))
-    dr.rectangle([38, 16, 52, 40], fill=(0, 204, 102, 255))
-    dr.rectangle([44, 10, 46, 48], fill=(0, 204, 102, 255))
-    img.save(DEFAULT_TRAY)
+    """生成默认托盘图标：深色圆角底 + 白色上升曲线（4 倍抗锯齿，低调不扎眼）"""
+    ss = 4
+    img = Image.new("RGBA", (64 * ss, 64 * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.rounded_rectangle([2 * ss, 2 * ss, 62 * ss, 62 * ss], radius=14 * ss,
+                        fill=(24, 28, 36, 255))
+    pts = [(10, 44), (20, 38), (28, 42), (38, 28), (46, 22)]
+    pts = [(x * ss, y * ss) for x, y in pts]
+    d.line(pts, fill=(235, 240, 245, 255), width=3 * ss, joint="curve")
+    x, y = pts[-1]
+    d.polygon([(x - 2 * ss, y - 6 * ss), (x + 6 * ss, y - 2 * ss), (x - 1 * ss, y + 1 * ss)],
+              fill=(235, 240, 245, 255))
+    img.resize((64, 64), Image.LANCZOS).save(DEFAULT_TRAY)
 
 
 def set_colorkey_alpha(hwnd, key_hex, alpha):
