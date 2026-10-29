@@ -364,6 +364,38 @@ def http_json(url, tries=3, timeout=6):
     return json.loads(http_get(url, tries=tries, timeout=timeout))
 
 
+def _eastmoney_index_quote(code):
+    """东财兜底：中证指数（93xxxx，如 931637 港股通互联网）腾讯行情源不收录，
+    但东方财富有实时数据。secid 前缀 2 = 中证指数。返回与 fetch_quotes 相同结构的 dict。"""
+    digits = code[-6:]
+    if not re.fullmatch(r"93\d{4}", digits):
+        return None
+    url = ("https://push2.eastmoney.com/api/qt/stock/get?secid=2.%s"
+           "&fields=f43,f44,f45,f46,f47,f48,f58,f60,f86") % digits
+    try:
+        d = json.loads(http_get(url, tries=2, timeout=5)).get("data")
+    except Exception:
+        return None
+    if not d or not isinstance(d.get("f43"), (int, float)):
+        return None
+
+    def px(v):
+        return round(v / 100, 3) if isinstance(v, (int, float)) else None
+
+    price, prev = px(d.get("f43")), px(d.get("f60"))
+    pct = None
+    if price and prev:
+        pct = round((price / prev - 1) * 100, 2)
+    ts = time.strftime("%H:%M:%S", time.localtime(d["f86"])) if d.get("f86") else ""
+    return {
+        "name": d.get("f58") or digits,
+        "price": price, "prev": prev, "open": px(d.get("f46")),
+        "vol": d.get("f47"), "amount": d.get("f48"),
+        "pct": pct, "high": px(d.get("f44")), "low": px(d.get("f45")),
+        "liangbi": None, "time": ts,
+    }
+
+
 def fetch_quotes(codes):
     """腾讯实时行情。返回 {code: dict}"""
     if not codes:
@@ -392,6 +424,12 @@ def fetch_quotes(codes):
                 "liangbi": num(49),         # 量比
                 "time": d[30],
             }
+    # 兜底：腾讯没收录的代码（如 93xxxx 中证指数）改从东财取
+    for code in codes:
+        if code not in out:
+            q = _eastmoney_index_quote(code)
+            if q:
+                out[code] = q
     return out
 
 
@@ -416,6 +454,30 @@ def fetch_minute(code):
             except ValueError:
                 continue
     return name, prev, rows
+
+
+def fetch_minute_eastmoney(code):
+    """东财分时兜底：93xxxx 中证指数（如 931637 港股通互联网）腾讯分时接口没有数据。
+    返回格式与 fetch_minute 一致：(name, prev_close, [(time, price, cumvol), ...])。
+    非中证指数代码返回 None，交回原流程。"""
+    digits = code[-6:]
+    if not re.fullmatch(r"93\d{4}", digits):
+        return None
+    url = ("https://push2his.eastmoney.com/api/qt/stock/trends2/get?secid=2.%s"
+           "&fields1=f1,f2,f3,f7&fields2=f51,f53,f56&iscr=0&ndays=1") % digits
+    data = http_json(url, tries=2).get("data") or {}
+    rows = []
+    for line in data.get("trends", []):
+        parts = line.split(",")
+        if len(parts) >= 3:
+            try:
+                rows.append((parts[0][-5:], float(parts[1]), float(parts[2])))
+            except ValueError:
+                continue
+    if not rows:
+        return None
+    q = _eastmoney_index_quote(code) or {}
+    return q.get("name") or digits, q.get("prev"), rows
 
 
 def fetch_kline(code, period):
@@ -781,7 +843,14 @@ class MinuteChart:
             err = ""
             try:
                 if self.mode == "minute":
-                    payload = ("minute", fetch_minute(self.code))
+                    try:
+                        payload = ("minute", fetch_minute(self.code))
+                    except Exception:
+                        # 腾讯没有的代码（如 93xxxx 中证指数）走东财兜底
+                        alt = fetch_minute_eastmoney(self.code)
+                        if not alt:
+                            raise
+                        payload = ("minute", alt)
                 else:
                     payload = ("kline", fetch_kline(self.code, self.period))
             except Exception as ex:
