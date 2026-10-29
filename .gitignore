@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境（用 requirements.txt 重建）
+.venv/
+venv/
+
+# 运行时生成：个人自选股、窗口位置、锁文件
+config.json
+config.json.bak*
+stock_monitor.lock
+
+# 系统
+Thumbs.db
+.DS_Store
