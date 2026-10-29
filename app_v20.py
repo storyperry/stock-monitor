@@ -1843,6 +1843,24 @@ class App:
             if code in self.cfg["stocks"]:
                 messagebox.showinfo("提示", "该股票已存在", parent=dlg)
                 return
+            # 校验行情源是否真有此代码（如 93 开头的中证指数编号无法订阅，
+            # 不拦截就会出现一行永远 "--" 的静默废行）
+            try:
+                dlg.config(cursor="watch")
+                dlg.update_idletasks()
+                has = code in fetch_quotes([code])
+            except Exception:
+                has = True      # 网络异常时不拦截，避免误伤
+            finally:
+                dlg.config(cursor="")
+            if not has:
+                messagebox.showwarning(
+                    "查无此代码",
+                    "行情源里没有 %s 的数据。\n"
+                    "93 开头多为中证指数编号，指数本身不可交易、接口也不提供；\n"
+                    "如需跟踪该指数，请改为添加跟踪它的 ETF 代码（5/15 开头）。" % code,
+                    parent=dlg)
+                return
             self.cfg["stocks"].append(code)
             save_config(self.cfg)
             self._refresh_tree_rows()
